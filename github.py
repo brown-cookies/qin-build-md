@@ -34,10 +34,13 @@ class RepoMessage(Enum):
     BAD_REQUEST = "BAD REQUEST"
     GITHUB_ERROR = "GITHUB ERROR"
     RATE_LIMITED = "RATE LIMITED"
+    NETWORK_ERROR = "NETWORK ERROR"
+    UNMATCH_STATUS = "UNMATCH STATUS"
 
 
 @dataclass
 class ErrorRepo:
+    # Status code of the response, return -1 if network error
     status_code: int
     error_type: RepoMessage
     repo: str
@@ -57,32 +60,33 @@ class SuccessRepo:
 
 def arg_to_owner_repo(arg: str) -> tuple[str, str]:
     """Converts the list input into readable variable."""
+    if "/" not in arg:
+        raise ValueError(f"Wrong format: '{arg}' — use owner/repo.")
     owner, name = arg.split("/", 1)
+    if not owner or not name:
+        raise ValueError(f"Wrong format: '{arg}' — use owner/repo.")
     return owner, name
 
 
 def get_owner_repo(argv: list[str]) -> list[tuple[str, str]]:
     repo_list: list[tuple[str, str]] = []
-
     for arg in argv:
-        try:
-            owner, repo = arg_to_owner_repo(arg)
-            repo_list.append((owner, repo))
-        except ValueError:
-            print("A retard put wrong format. Use owner/repo stupid ahh engineer.")
-            print()
-            continue
+        owner, repo = arg_to_owner_repo(arg)
+        repo_list.append((owner, repo))
     return repo_list
 
 
-def fetch_repo(owner: str, repo: str) -> requests.Response:
+def fetch_repo(owner: str, repo: str) -> requests.Response | requests.exceptions.RequestException:
     """"""
     query = f"{GITHUB_API}/{owner}/{repo}"
-    response = requests.get(
-        query,
-        timeout=REQUEST_TIMEOUT,
-    )
-    return response
+
+    try:
+        return requests.get(
+            query,
+            timeout=REQUEST_TIMEOUT,
+        )
+    except requests.exceptions.RequestException as e:
+        return e
 
 
 def _handle_success_fetch(response: requests.Response, owner: str, repo: str, SUCCESS_REPO_LIST: list[SuccessRepo]):
@@ -131,6 +135,30 @@ def _handle_server_error_fetch(response: requests.Response, owner: str, repo: st
     )
 
 
+def _handle_network_error_fetch(e: requests.exceptions.RequestException, owner: str, repo: str, ERROR_REPO_LIST: list[ErrorRepo]):
+    ERROR_REPO_LIST.append(
+        ErrorRepo(
+            status_code=-1,
+            error_type=RepoMessage.NETWORK_ERROR,
+            repo=repo,
+            owner=owner,
+            message=f"{type(e).__name__}: {e}"
+        )
+    )
+
+
+def _handle_unmatch_status_code_fetch(response: requests.Response, owner: str, repo: str, ERROR_REPO_LIST: list[ErrorRepo]):
+    ERROR_REPO_LIST.append(
+        ErrorRepo(
+            status_code=response.status_code,
+            error_type=RepoMessage.UNMATCH_STATUS,
+            repo=repo,
+            owner=owner,
+            message=f"Status code {response.status_code} not one Http status code outcomes for this endpoint. 200, 301, 403, 404",
+        )
+    )
+
+
 def _is_being_rate_limited(headers: CaseInsensitiveDict[str]):
     remaining = headers.get('X-RateLimit-Remaining')
 
@@ -158,14 +186,24 @@ def classify_response(repos: list[tuple[str, str]], SUCCESS_REPO_LIST: list[Succ
     for (owner, repo) in repos:
         response = fetch_repo(owner, repo)
 
+        if isinstance(response, requests.exceptions.RequestException):
+            _handle_network_error_fetch(response, owner, repo, ERROR_REPO_LIST)
+            continue
+
         if response.status_code == 200:
             _handle_success_fetch(response, owner, repo, SUCCESS_REPO_LIST)
-        elif response.status_code == 404:
-            _handle_user_error_fetch(response, owner, repo, ERROR_REPO_LIST)
-        elif response.status_code == 403 and _is_being_rate_limited(response.headers):
-            _handle_rate_limited_fetch(response, owner, repo, ERROR_REPO_LIST)
+        elif response.status_code >= 400 and response.status_code < 500:
+            if response.status_code == 403 and _is_being_rate_limited(response.headers):
+                _handle_rate_limited_fetch(
+                    response, owner, repo, ERROR_REPO_LIST)
+            else:
+                _handle_user_error_fetch(
+                    response, owner, repo, ERROR_REPO_LIST)
         elif response.status_code >= 500:
             _handle_server_error_fetch(response, owner, repo, ERROR_REPO_LIST)
+        else:
+            _handle_unmatch_status_code_fetch(
+                response, owner, repo, ERROR_REPO_LIST)
 
 
 def _print_success(SUCCESS_REPO_LIST: list[SuccessRepo]) -> None:
