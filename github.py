@@ -153,12 +153,23 @@ def _handle_server_error_fetch(response: requests.Response, owner: str, repo: st
 
 
 def _handle_network_error_fetch(e: requests.exceptions.RequestException, owner: str, repo: str) -> RequestResult:
+    if isinstance(e, requests.exceptions.ConnectTimeout):
+        message = "Connection timed out."
+    elif isinstance(e, requests.exceptions.ReadTimeout):
+        message = "Response timed out."
+    elif isinstance(e, requests.exceptions.SSLError):
+        message = "Secure connection to GitHub failed."
+    elif isinstance(e, requests.exceptions.ConnectionError):
+        message = "Could not connect to GitHub."
+    else:
+        message = "Network request failed."
+
     return ErrorRepo(
         status_code=-1,
         error_type=RepoMessage.NETWORK_ERROR,
         repo=repo,
         owner=owner,
-        message=f"{type(e).__name__}: {e}"
+        message=message,
     )
 
 
