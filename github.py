@@ -199,7 +199,8 @@ def classify_response(repos: list[tuple[str, str]]) -> list[RequestResult]:
         response = fetch_repo(owner, repo)
 
         if isinstance(response, requests.exceptions.RequestException):
-            _handle_network_error_fetch(response, owner, repo)
+            result = _handle_network_error_fetch(response, owner, repo)
+            results.append(result)
             continue
 
         if response.status_code == 200:
