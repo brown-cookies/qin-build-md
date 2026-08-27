@@ -58,6 +58,10 @@ class SuccessRepo:
     message: str
 
 
+# Add this one, for the clean request handler instead of mutating it directly to the function
+RequestResult = SuccessRepo | ErrorRepo
+
+
 def arg_to_owner_repo(arg: str) -> tuple[str, str]:
     """Converts the list input into readable variable."""
     if "/" not in arg:
@@ -89,73 +93,82 @@ def fetch_repo(owner: str, repo: str) -> requests.Response | requests.exceptions
         return e
 
 
-def _handle_success_fetch(response: requests.Response, owner: str, repo: str, SUCCESS_REPO_LIST: list[SuccessRepo]):
-    data = response.json()
-    SUCCESS_REPO_LIST.append(
-        SuccessRepo(
+def _get_response_json(response: requests.Response) -> dict | None:
+    try:
+        return response.json()
+    except requests.exceptions.JSONDecodeError:
+        return None
+
+
+def _handle_success_fetch(response: requests.Response, owner: str, repo: str) -> RequestResult:
+    data = _get_response_json(response)
+
+    if not isinstance(data, dict):
+        return ErrorRepo(
             status_code=response.status_code,
+            error_type=RepoMessage.GITHUB_ERROR,
             repo=repo,
             owner=owner,
-            description=data.get(
-                "description") or "(No description.)",
-            starred_count=data.get("stargazers_count", 0),
-            message="Repository found.",
+            message="Success 200 status code but body is not an instance of JSON.",
         )
+
+    return SuccessRepo(
+        status_code=response.status_code,
+        repo=repo,
+        owner=owner,
+        description=data.get(
+            "description") or "(No description.)",
+        starred_count=data.get("stargazers_count", 0),
+        message="Repository found.",
     )
 
 
-def _handle_user_error_fetch(response: requests.Response, owner: str, repo: str, ERROR_REPO_LIST: list[ErrorRepo]):
+def _handle_user_error_fetch(response: requests.Response, owner: str, repo: str) -> RequestResult:
     if response.status_code == 404:
         error_type = RepoMessage.NOT_FOUND
         message = f"'{owner}/{repo}' does not exist."
     else:
         error_type = RepoMessage.BAD_REQUEST
-        message = response.json().get("message", "Bad request")
+        data = _get_response_json(response)
+        message = data.get("message", "Bad request") if data is not None else \
+            "Bad request (response body was not valid JSON)."
 
-    ERROR_REPO_LIST.append(
-        ErrorRepo(
-            status_code=response.status_code,
-            error_type=error_type,
-            repo=repo,
-            owner=owner,
-            message=message,
-        )
+    return ErrorRepo(
+        status_code=response.status_code,
+        error_type=error_type,
+        repo=repo,
+        owner=owner,
+        message=message,
     )
 
 
-def _handle_server_error_fetch(response: requests.Response, owner: str, repo: str, ERROR_REPO_LIST: list[ErrorRepo]):
-    ERROR_REPO_LIST.append(
-        ErrorRepo(
-            status_code=response.status_code,
-            error_type=RepoMessage.GITHUB_ERROR,
-            repo=repo,
-            owner=owner,
-            message="Something went wrong on the Server!",
-        )
+def _handle_server_error_fetch(response: requests.Response, owner: str, repo: str) -> RequestResult:
+    return ErrorRepo(
+        status_code=response.status_code,
+        error_type=RepoMessage.GITHUB_ERROR,
+        repo=repo,
+        owner=owner,
+        message="Something went wrong on the Server!",
     )
 
 
-def _handle_network_error_fetch(e: requests.exceptions.RequestException, owner: str, repo: str, ERROR_REPO_LIST: list[ErrorRepo]):
-    ERROR_REPO_LIST.append(
-        ErrorRepo(
-            status_code=-1,
-            error_type=RepoMessage.NETWORK_ERROR,
-            repo=repo,
-            owner=owner,
-            message=f"{type(e).__name__}: {e}"
-        )
+def _handle_network_error_fetch(e: requests.exceptions.RequestException, owner: str, repo: str) -> RequestResult:
+    return ErrorRepo(
+        status_code=-1,
+        error_type=RepoMessage.NETWORK_ERROR,
+        repo=repo,
+        owner=owner,
+        message=f"{type(e).__name__}: {e}"
     )
 
 
-def _handle_unmatch_status_code_fetch(response: requests.Response, owner: str, repo: str, ERROR_REPO_LIST: list[ErrorRepo]):
-    ERROR_REPO_LIST.append(
-        ErrorRepo(
-            status_code=response.status_code,
-            error_type=RepoMessage.UNMATCH_STATUS,
-            repo=repo,
-            owner=owner,
-            message=f"Status code {response.status_code} not one Http status code outcomes for this endpoint. 200, 301, 403, 404",
-        )
+def _handle_unmatch_status_code_fetch(response: requests.Response, owner: str, repo: str) -> RequestResult:
+    return ErrorRepo(
+        status_code=response.status_code,
+        error_type=RepoMessage.UNMATCH_STATUS,
+        repo=repo,
+        owner=owner,
+        message=f"Status code {response.status_code} not one Http status code outcomes for this endpoint. 200, 301, 403, 404",
     )
 
 
@@ -168,48 +181,56 @@ def _is_being_rate_limited(headers: CaseInsensitiveDict[str]):
     return int(remaining) == 0
 
 
-def _handle_rate_limited_fetch(response: requests.Response, owner: str, repo: str, ERROR_REPO_LIST: list[ErrorRepo]):
+def _handle_rate_limited_fetch(response: requests.Response, owner: str, repo: str) -> RequestResult:
     reset = response.headers.get("X-RateLimit-Reset")
-    ERROR_REPO_LIST.append(
-        ErrorRepo(
-            status_code=response.status_code,
-            error_type=RepoMessage.RATE_LIMITED,
-            repo=repo,
-            owner=owner,
-            message=f"Resetting at {reset}." if reset else "You hit the limit.",
-        )
+    return ErrorRepo(
+        status_code=response.status_code,
+        error_type=RepoMessage.RATE_LIMITED,
+        repo=repo,
+        owner=owner,
+        message=f"Resetting at {reset}." if reset else "You hit the limit.",
     )
 
 
-def classify_response(repos: list[tuple[str, str]], SUCCESS_REPO_LIST: list[SuccessRepo], ERROR_REPO_LIST: list[ErrorRepo]):
+def classify_response(repos: list[tuple[str, str]]) -> list[RequestResult]:
+    results: list[RequestResult] = []
 
     for (owner, repo) in repos:
         response = fetch_repo(owner, repo)
 
         if isinstance(response, requests.exceptions.RequestException):
-            _handle_network_error_fetch(response, owner, repo, ERROR_REPO_LIST)
+            _handle_network_error_fetch(response, owner, repo)
             continue
 
         if response.status_code == 200:
-            _handle_success_fetch(response, owner, repo, SUCCESS_REPO_LIST)
+            result = _handle_success_fetch(response, owner, repo)
+            results.append(result)
         elif response.status_code >= 400 and response.status_code < 500:
             if response.status_code == 403 and _is_being_rate_limited(response.headers):
-                _handle_rate_limited_fetch(
-                    response, owner, repo, ERROR_REPO_LIST)
+                result = _handle_rate_limited_fetch(
+                    response, owner, repo)
+                results.append(result)
             else:
-                _handle_user_error_fetch(
-                    response, owner, repo, ERROR_REPO_LIST)
+                result = _handle_user_error_fetch(
+                    response, owner, repo)
+                results.append(result)
+
         elif response.status_code >= 500:
-            _handle_server_error_fetch(response, owner, repo, ERROR_REPO_LIST)
+            result = _handle_server_error_fetch(response, owner, repo)
+            results.append(result)
+
         else:
-            _handle_unmatch_status_code_fetch(
-                response, owner, repo, ERROR_REPO_LIST)
+            result = _handle_unmatch_status_code_fetch(
+                response, owner, repo)
+            results.append(result)
+
+    return results
 
 
-def _print_success(SUCCESS_REPO_LIST: list[SuccessRepo]) -> None:
+def _print_success(success_repos: list[SuccessRepo]) -> None:
     print("SUCCESS")
     print(f"  {'STATUS':6}  {'REPO':35}  {'STARS':>6}  {'DESCRIPTION'}")
-    for r in SUCCESS_REPO_LIST:
+    for r in success_repos:
         print(
             f"  [{r.status_code}]  {r.owner + '/' + r.repo:35}  "
             f"{r.starred_count:6d}  "
@@ -217,10 +238,10 @@ def _print_success(SUCCESS_REPO_LIST: list[SuccessRepo]) -> None:
         )
 
 
-def _print_errors(ERROR_REPO_LIST: list[ErrorRepo]) -> None:
+def _print_errors(error_repos: list[ErrorRepo]) -> None:
     print("ERRORS")
     print(f"  {'STATUS':6}  {'REPO':35}  {'TYPE':12}  {'MESSAGE'}")
-    for e in ERROR_REPO_LIST:
+    for e in error_repos:
         print(
             f"  [{e.status_code}]  {e.owner + '/' + e.repo:35}  "
             f"{e.error_type.value:12}  "
@@ -228,13 +249,16 @@ def _print_errors(ERROR_REPO_LIST: list[ErrorRepo]) -> None:
         )
 
 
-def print_result(SUCCESS_REPO_LIST: list[SuccessRepo], ERROR_REPO_LIST: list[ErrorRepo]) -> None:
-    _print_success(SUCCESS_REPO_LIST)
-    _print_errors(ERROR_REPO_LIST)
+def print_results(results: list[RequestResult]) -> None:
+    success_repos = [r for r in results if isinstance(r, SuccessRepo)]
+    error_repos = [r for r in results if isinstance(r, ErrorRepo)]
 
-    print(f"  total entered: {len(SUCCESS_REPO_LIST) + len(ERROR_REPO_LIST)}")
-    print(f"  succeeded: {len(SUCCESS_REPO_LIST)}")
-    print(f"  failed: {len(ERROR_REPO_LIST)}")
+    _print_success(success_repos)
+    _print_errors(error_repos)
+
+    print(f"  total entered: {len(results)}")
+    print(f"  succeeded: {len(success_repos)}")
+    print(f"  failed: {len(error_repos)}")
 
 
 def main() -> None:
@@ -247,11 +271,8 @@ def main() -> None:
 
     repo_list = get_owner_repo(sys.argv[1:])
 
-    SUCCESS_REPO_LIST: list[SuccessRepo] = []
-    ERROR_REPO_LIST: list[ErrorRepo] = []
-
-    classify_response(repo_list, SUCCESS_REPO_LIST, ERROR_REPO_LIST)
-    print_result(SUCCESS_REPO_LIST, ERROR_REPO_LIST)
+    results = classify_response(repo_list)
+    print_results(results)
 
 
 if __name__ == "__main__":
