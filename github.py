@@ -130,8 +130,8 @@ def _handle_user_error_fetch(response: requests.Response, owner: str, repo: str)
     else:
         error_type = RepoMessage.BAD_REQUEST
         data = _get_response_json(response)
-        message = data.get("message", "Bad request") if data is not None else \
-            "Bad request (response body was not valid JSON)."
+        message = data.get("message", "Bad request") if isinstance(data, dict) else \
+            "Bad request (response body is not an instance of JSON)."
 
     return ErrorRepo(
         status_code=response.status_code,
@@ -208,12 +208,10 @@ def classify_response(repos: list[tuple[str, str]]) -> list[RequestResult]:
             results.append(result)
         elif response.status_code >= 400 and response.status_code < 500:
             if response.status_code == 403 and _is_being_rate_limited(response.headers):
-                result = _handle_rate_limited_fetch(
-                    response, owner, repo)
+                result = _handle_rate_limited_fetch(response, owner, repo)
                 results.append(result)
             else:
-                result = _handle_user_error_fetch(
-                    response, owner, repo)
+                result = _handle_user_error_fetch(response, owner, repo)
                 results.append(result)
 
         elif response.status_code >= 500:
@@ -240,7 +238,7 @@ def _print_success(success_repos: list[SuccessRepo]) -> None:
 
 
 def _print_errors(error_repos: list[ErrorRepo]) -> None:
-    print("ERRORS")
+    print("ERROR")
     print(f"  {'STATUS':6}  {'REPO':35}  {'TYPE':12}  {'MESSAGE'}")
     for e in error_repos:
         print(
