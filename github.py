@@ -36,11 +36,12 @@ class RepoMessage(Enum):
     RATE_LIMITED = "RATE LIMITED"
     NETWORK_ERROR = "NETWORK ERROR"
     UNMATCH_STATUS = "UNMATCH STATUS"
+    INVALID_FORMAT = "INVALID FORMAT"
 
 
 @dataclass
 class ErrorRepo:
-    # Status code of the response, return -1 if network error
+    # Status code of the response, return -1 if network error and formatting error
     status_code: int
     error_type: RepoMessage
     repo: str
@@ -72,12 +73,26 @@ def arg_to_owner_repo(arg: str) -> tuple[str, str]:
     return owner, name
 
 
-def get_owner_repo(argv: list[str]) -> list[tuple[str, str]]:
+def get_owner_repo(argv: list[str]) -> tuple[list[tuple[str, str]], list[ErrorRepo]]:
     repo_list: list[tuple[str, str]] = []
+    format_errors: list[ErrorRepo] = []
+
     for arg in argv:
-        owner, repo = arg_to_owner_repo(arg)
-        repo_list.append((owner, repo))
-    return repo_list
+        try:
+            owner, repo = arg_to_owner_repo(arg)
+            repo_list.append((owner, repo))
+        except ValueError as e:
+            format_errors.append(
+                ErrorRepo(
+                    status_code=-1,
+                    error_type=RepoMessage.INVALID_FORMAT,
+                    repo="Unknown",
+                    owner="Unknown",
+                    message=str(e),
+                )
+            )
+
+    return repo_list, format_errors
 
 
 def fetch_repo(owner: str, repo: str) -> requests.Response | requests.exceptions.RequestException:
@@ -279,9 +294,10 @@ def main() -> None:
         print("usage: py github.py owner/repo ...")
         sys.exit(1)
 
-    repo_list = get_owner_repo(sys.argv[1:])
+    repo_list, format_errors = get_owner_repo(sys.argv[1:])
 
     results = classify_response(repo_list)
+    results.extend(format_errors)
     print_results(results)
 
 
