@@ -97,7 +97,7 @@ def _handle_success_fetch(response: requests.Response, owner: str, repo: str, SU
             repo=repo,
             owner=owner,
             description=data.get(
-                "description") or "(This retard is rather lazy and didn't provide description.)",
+                "description") or "(No description.)",
             starred_count=data.get("stargazers_count", 0),
             message="Repository found.",
         )
@@ -107,7 +107,7 @@ def _handle_success_fetch(response: requests.Response, owner: str, repo: str, SU
 def _handle_user_error_fetch(response: requests.Response, owner: str, repo: str, ERROR_REPO_LIST: list[ErrorRepo]):
     if response.status_code == 404:
         error_type = RepoMessage.NOT_FOUND
-        message = f"'Bro, {owner}/{repo}' is does not exist, or Private? we don't know."
+        message = f"'{owner}/{repo}' does not exist."
     else:
         error_type = RepoMessage.BAD_REQUEST
         message = response.json().get("message", "Bad request")
@@ -130,7 +130,7 @@ def _handle_server_error_fetch(response: requests.Response, owner: str, repo: st
             error_type=RepoMessage.GITHUB_ERROR,
             repo=repo,
             owner=owner,
-            message="Mwehehe, This Tech giant github had an internal error handling this request.",
+            message="Something went wrong on the Server!",
         )
     )
 
@@ -176,7 +176,7 @@ def _handle_rate_limited_fetch(response: requests.Response, owner: str, repo: st
             error_type=RepoMessage.RATE_LIMITED,
             repo=repo,
             owner=owner,
-            message=f"Resetting at {reset}." if reset else "Bro hit the rate.",
+            message=f"Resetting at {reset}." if reset else "You hit the limit.",
         )
     )
 
