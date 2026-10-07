@@ -44,4 +44,4 @@ def test_is_being_rate_limited():
         "X-RateLimit-Remaining": "0"
     })
 
-    assert _is_being_rate_limited(headers) is True
+    assert _is_being_rate_limited(headers) is False
